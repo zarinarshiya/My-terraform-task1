@@ -1,0 +1,270 @@
+provider "aws" {
+  
+  region     = "ap-south-1"
+  profile    = "default"
+
+}
+
+resource "null_resource" "ssh-keygen"{
+  provisioner "local-exec" {
+		command = "ssh-keygen -y -t rsa -m PEM -f C:/Users/HP/Desktop/black-keys/black -N ''"
+	}
+}
+
+resource "aws_key_pair" "arshi_pub_key_import" {
+  key_name   = "arshi_key_pair"
+  public_key = file("C:/Users/HP/Desktop/black-keys/black.pub")
+}
+
+
+resource "aws_security_group" "arshi-sg" {
+  name        = "arshi-sg"
+  description = "Allow traffic"
+  vpc_id = "vpc-edc4db85"
+  
+
+  ingress {
+    description = "TCP"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+ ingress {
+    description = "HTTP"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  
+   ingress {
+    description = "HTTPS"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "Avengers"
+  }
+}
+
+output "sg-output" {
+
+	value = aws_security_group.arshi-sg.vpc_id
+ }
+
+
+
+resource "aws_instance" "arshi-instance" {
+  depends_on = [
+		aws_security_group.arshi-sg
+	]
+  ami               = "ami-0447a12f28fddb066"
+  instance_type     = "t2.micro"
+  key_name   = "arshi_key_pair"
+  security_groups =  [ "arshi-sg" ] 
+
+  tags = {
+    Name = "Avengers"
+  }
+
+connection {
+    type        = "ssh"
+    user        = "ec2-user"
+    private_key = file("C:/Users/HP/Desktop/black-keys/black")  
+    host        = aws_instance.arshi-instance.public_ip
+  }
+
+
+
+  provisioner "remote-exec" {
+    inline = [
+      		"sudo yum install httpd php git   -y",
+		"sudo systemctl restart httpd",
+		"sudo systemctl enable httpd",
+    ]
+  }
+
+	
+}
+
+output "arshi-az" {
+value = aws_instance.arshi-instance.availability_zone
+}
+
+
+////////////////ebs
+
+resource "aws_ebs_volume" "arshi-volume" {
+  availability_zone = aws_instance.arshi-instance.availability_zone
+  size              = 1
+
+	tags = {
+	     Name ="arshi_vol"
+	}
+}
+
+resource "aws_volume_attachment" "arshivol_att" {
+  device_name = "/dev/sdm"
+  volume_id   = aws_ebs_volume.arshi-volume.id
+  instance_id = aws_instance.arshi-instance.id
+  force_detach = true
+}
+
+output "ebs_id-op" {
+value = aws_ebs_volume.arshi-volume.id
+}
+
+output "instance_output"{
+value = aws_instance.arshi-instance.public_ip
+}
+
+
+///PublicIPOutput
+
+resource "null_resource" "nulllocal2" {
+	provisioner "local-exec" {
+		command = "echo ${aws_instance.arshi-instance.public_ip} > publicip.txt"
+	}
+}
+
+
+
+/////////////////mounting 
+
+resource "null_resource" "nullremote3" {
+depends_on = [
+   aws_volume_attachment.arshivol_att,
+]
+
+connection {
+    type        = "ssh"
+    user        = "ec2-user"
+    private_key = file("C:/Users/HP/Desktop/black-keys/black")
+    host        = aws_instance.arshi-instance.public_ip
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+	"sudo mkfs.ext4  /dev/xvda",
+	"sudo mount /dev/xvdm  /var/www/html",
+	"sudo rm  -rf  /var/www/html/*",
+	"sudo git clone https://github.com/zarinarshiya/My-terraform-task1.git /var/www/html/"
+	
+      	]
+  
+}
+
+}
+
+resource "null_resource" "nulllocal1" {
+ depends_on = [
+ null_resource.nullremote3,
+]
+
+}
+
+///////////s3
+
+resource "aws_s3_bucket" "arshi-bucket0987654321" {
+   bucket  = "arshi-bucket0987654321"
+    acl     = "public-read"
+
+
+provisioner "local-exec" {
+    command = "git clone https://github.com/zarinarshiya/My-terraform-task1.git  My-terraform-task1"
+  }
+
+provisioner "local-exec" {
+    when        =   destroy
+    command = "echo Y | rmdir /s My-terraform-task1"
+  }
+
+}
+
+
+resource "aws_s3_bucket_object" "arshi-bucket-object" {
+  
+  bucket = aws_s3_bucket.arshi-bucket0987654321.bucket
+  key    = "clg2.jpg"
+  source = "My-terraform-task1/clg2.jpg"
+  acl    = "public-read"
+
+  }
+//////////////
+
+variable "var1" {default = "S3-"}
+locals {
+    s3_origin_id = "${var.var1}${aws_s3_bucket.arshi-bucket0987654321.bucket}"
+    image_url = "${aws_cloudfront_distribution.s3_distribution.domain_name}/${aws_s3_bucket_object.arshi-bucket-object.key}"
+}
+resource "aws_cloudfront_distribution" "s3_distribution" {
+    default_cache_behavior {
+        allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+        cached_methods   = ["GET", "HEAD"]
+        target_origin_id = local.s3_origin_id
+        forwarded_values {
+            query_string = false
+            cookies {
+                forward = "none"
+            }
+        }
+       min_ttl = 0
+       default_ttl = 3600
+       max_ttl = 86400
+      compress = true
+        viewer_protocol_policy = "allow-all"
+    }
+enabled             = true
+origin {
+        domain_name = aws_s3_bucket.arshi-bucket0987654321.bucket_domain_name
+        origin_id   = local.s3_origin_id
+    }
+restrictions {
+        geo_restriction {
+        restriction_type = "whitelist"
+        locations = ["IN"]
+        }
+    }
+viewer_certificate {
+        cloudfront_default_certificate = true
+    }
+
+connection {
+type = "ssh"
+user = "ec2-user"
+private_key = file("C:/Users/HP/Desktop/black-keys/black")
+host = aws_instance.arshi-instance.public_ip	
+}
+
+
+provisioner "remote-exec" {
+	inline = [
+	"sudo su << EOF",
+	"echo \"<img src='http://${self.domain_name}/${aws_s3_bucket_object.arshi-bucket-object.key}'>\"  >> /var/www/html/terraform.html",
+	"EOF",
+	]
+}
+
+provisioner "local-exec" {
+		command = "start chrome ${aws_instance.arshi-instance.public_ip}"
+	}
+}      
+
+
+
+
+
+
+
